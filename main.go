@@ -68,11 +68,11 @@ func onInput(chn chan string, queue *string, user *string)(){
 		case "END":
 			os.Exit(0)
 		default:
-			sendMessage (&msg , queue, user)
+			sendMessage (&msg , queue, user, "echo")
 		}
 	}
 } 
-func sendMessage(message *string, queue *string, user *string) {
+func sendMessage(message *string, queue *string, user *string, command string) {
 		_, err := sqsService.SendMessage(&sqs.SendMessageInput{
 			QueueUrl:            	queue,
 			MessageBody:					message,
@@ -83,14 +83,14 @@ func sendMessage(message *string, queue *string, user *string) {
 						DataType:    aws.String("String"),
 						StringValue: user,
 				},
-				// "Session": &sqs.MessageAttributeValue{
-				// 		DataType:    aws.String("String"),
-				// 		StringValue: aws.String(token),
-				// },
+				"Command": &sqs.MessageAttributeValue{
+						DataType:    aws.String("String"),
+						StringValue: aws.String(command),
+				},
 			},
 		})
 		if err != nil {
-      log.Errorf("failed to send sqs message %v", err)
+      log.Errorf("Failed to send sqs message %v", err)
 		}
 		fmt.Printf("[%s]\nSent message: %s\n",Blue(time.Now().Format(time.RFC1123)), Green(*message))
 }
@@ -101,34 +101,27 @@ func deleteMessage(receiptHandle *string, queue *string) {
 		ReceiptHandle:				receiptHandle,
 	})
 	if err != nil {
-		log.Errorf("failed to delete sqs message %v", err)
+		log.Errorf("Failed to delete sqs message %v", err)
 	}
 }
 func pollQueue(chn chan<- *sqs.Message, user *string, queue *string) {
   for {
     output, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
-			AttributeNames:					aws.StringSlice([]string{"SentTimestamp"}),
+			AttributeNames:					aws.StringSlice([]string{"SentTimestamp", "MessageGroupId"}),
       QueueUrl:            		queue,
       MaxNumberOfMessages: 		aws.Int64(sqsMaxMessages),
 			WaitTimeSeconds:     		aws.Int64(sqsPollWaitSeconds),
-			MessageAttributeNames:	aws.StringSlice([]string{"User","Session"}),
+			MessageAttributeNames:	aws.StringSlice([]string{"User", "Command"}),
     })
-
     if err != nil {
-      log.Errorf("failed to fetch sqs message %v", err)
+      log.Errorf("Failed to fetch sqs message %v", err)
     }
-
     for _, message := range output.Messages {
 			if (
 				*message.MessageAttributes["User"].StringValue == *user &&
-				*message.MessageAttributes["Session"].StringValue == token ){
+				*message.MessageAttributes["User"].StringValue == "echo" &&
+				*message.Attributes["MessageGroupId"] == token ){
 				chn <- message
-			} else {
-				sqsService.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
-					QueueUrl: queue,
-					ReceiptHandle: message.ReceiptHandle,
-					VisibilityTimeout: aws.Int64(0),
-				})
 			}
     }
   }
