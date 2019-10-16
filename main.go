@@ -12,8 +12,23 @@ import(
 	"github.com/aws/aws-sdk-go/service/s3"
 	"github.com/aws/aws-sdk-go/service/s3/s3manager"
 	. "github.com/logrusorgru/aurora"
-	"github.com/rs/xid"
+	"github.com/rs/xid"    
+	"github.com/AlecAivazis/survey/v2"
 )
+var basicQs = []*survey.Question{
+	{
+		Name:     "username",
+		Prompt:   &survey.Input{Message: "Username:"},
+	},
+	{
+		Name: "function",
+		Prompt: &survey.Select{
+				Message: "Choose a function:",
+				Options: []string{"Echo", "Search", "Download"},
+				Default: "Echo",
+		},
+	},
+}
 const sqsMaxMessages int64 = 1
 const sqsPollWaitSeconds int64 = 1
 var sess = session.Must(session.NewSessionWithOptions(session.Options{
@@ -25,22 +40,25 @@ var downloader = s3manager.NewDownloader(sess)
 var token = xid.New().String()
 var bucket = "ta-bucket-josemarinas"
 func main() {
-		inputQueue, err := getQueueUrlByTag("Flow", "input")
-		if err != nil {
-			log.Errorf("Error getting input queue")
-			return
-		}
-		outputQueue, err := getQueueUrlByTag("Flow", "output")
-		if err != nil {
-			log.Errorf("Error getting output queue")
-			return
-		}
-		reader := bufio.NewReader(os.Stdin)
-		fmt.Printf("Enter username: ")
-		user, _ := reader.ReadString('\n')
-		user = strings.TrimSuffix(user, "\n")
-		user = strings.TrimSpace(user)
-		fmt.Printf("Selected user: %s\n", Green(user))
+	basicInfo := struct {
+		Username	string
+		Function 	string
+	}{}
+	inputQueue, err := getQueueUrlByTag("Flow", "input")
+	if err != nil {
+		log.Errorf("Error getting input queue")
+		return
+	}
+	outputQueue, err := getQueueUrlByTag("Flow", "output")
+	if err != nil {
+		log.Errorf("Error getting output queue")
+		return
+	}
+	reader := bufio.NewReader(os.Stdin)
+	err = survey.Ask(basicQs,  &basicInfo)
+	if (basicInfo.Function == "Download") {
+		downloadAllConversation(&basicInfo.Username)
+	} else {
 		fmt.Printf("Enter message: ")
 		outMsgChan := make(chan string, 1)
 		inMsgChan := make(chan *sqs.Message, sqsMaxMessages)
@@ -52,23 +70,33 @@ func main() {
 				outMsgChan <- message	
 			}
 		}()
-		go onInput(outMsgChan, &inputQueue, &user)
-		go pollQueue(inMsgChan, &user, &outputQueue)
+		go onInput(outMsgChan, &inputQueue, &basicInfo.Username, &basicInfo.Function)
+		go pollQueue(inMsgChan, &basicInfo.Username, &outputQueue)
 		for message := range inMsgChan {
-			fmt.Printf("[%s]\nReceived message: %s\nEnter message: ",Blue(time.Now().Format(time.RFC1123)), Yellow(*message.Body))
-			deleteMessage(message.ReceiptHandle, &outputQueue)
+			if (*message.MessageAttributes["Command"].StringValue == "echo") {
+				fmt.Printf("[%s]\nReceived message: %s\nEnter message: ",Blue(time.Now().Format(time.RFC1123)), Yellow(*message.Body))
+				deleteMessage(message.ReceiptHandle, &outputQueue)
+			} else {
+				fmt.Printf("[%s]\nSearch Results:\n%s\nEnter message: ", Blue(time.Now().Format(time.RFC1123)), Yellow(*message.Body))
+				deleteMessage(message.ReceiptHandle, &outputQueue)
+			}
 		}
 	}
-func onInput(chn chan string, queue *string, user *string)(){
+}
+func onInput(chn chan string, queue *string, user *string, function *string)(){
 	for {
 		msg := <-chn
-		switch msg {
-		case "DOWNLOAD":
-			downloadAllConversation(user)
-		case "END":
-			os.Exit(0)
+		switch *function {
+		case "Search":
+			sendMessage(&msg, queue, user, "search")
+		case "Echo":
+			if ( msg == "END") {
+				os.Exit(0)
+			} else {
+				sendMessage(&msg, queue, user, "echo")
+			}
 		default:
-			sendMessage (&msg , queue, user, "echo")
+			sendMessage(&msg , queue, user, "echo")
 		}
 	}
 } 
@@ -104,6 +132,7 @@ func deleteMessage(receiptHandle *string, queue *string) {
 		log.Errorf("Failed to delete sqs message %v", err)
 	}
 }
+
 func pollQueue(chn chan<- *sqs.Message, user *string, queue *string) {
   for {
     output, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
@@ -119,9 +148,15 @@ func pollQueue(chn chan<- *sqs.Message, user *string, queue *string) {
     for _, message := range output.Messages {
 			if (
 				*message.MessageAttributes["User"].StringValue == *user &&
-				*message.MessageAttributes["User"].StringValue == "echo" &&
+				(*message.MessageAttributes["Command"].StringValue == "echo" ||
+				*message.MessageAttributes["Command"].StringValue == "search") &&
 				*message.Attributes["MessageGroupId"] == token ){
 				chn <- message
+			} else {
+				fmt.Println(*message.MessageAttributes["User"].StringValue)
+				fmt.Println(*message.MessageAttributes["User"].StringValue)
+				fmt.Println(*message.MessageAttributes["User"].StringValue)
+				log.Warnf("Echo system cant handle this request, waiting until timeout\n")
 			}
     }
   }
@@ -153,7 +188,7 @@ func downloadAllConversation(user *string) {
 	if err != nil {
 		fmt.Printf("Error writing to file: %s", err)
 	}
-	fmt.Println("Conversation downloaded succesfully")
+	log.Infof("Downloaded conversation succesfully, saved in file %s.txt", *user)
 	defer f.Close()
 	os.Exit(0)
 }
