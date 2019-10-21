@@ -104,8 +104,8 @@ func sendMessage(message *string, queue *string, user *string, command string) {
 		_, err := sqsService.SendMessage(&sqs.SendMessageInput{
 			QueueUrl:            	queue,
 			MessageBody:					message,
-			MessageGroupId:				aws.String(token),
-			MessageDeduplicationId: aws.String(xid.New().String()),
+			// MessageGroupId:				aws.String(token),
+			// MessageDeduplicationId: aws.String(xid.New().String()),
 			MessageAttributes: map[string]*sqs.MessageAttributeValue{
 				"User": &sqs.MessageAttributeValue{
 						DataType:    aws.String("String"),
@@ -114,6 +114,10 @@ func sendMessage(message *string, queue *string, user *string, command string) {
 				"Command": &sqs.MessageAttributeValue{
 						DataType:    aws.String("String"),
 						StringValue: aws.String(command),
+				},
+				"Session": &sqs.MessageAttributeValue{
+						DataType:    aws.String("String"),
+						StringValue: aws.String(token),
 				},
 			},
 		})
@@ -136,11 +140,11 @@ func deleteMessage(receiptHandle *string, queue *string) {
 func pollQueue(chn chan<- *sqs.Message, user *string, queue *string) {
   for {
     output, err := sqsService.ReceiveMessage(&sqs.ReceiveMessageInput{
-			AttributeNames:					aws.StringSlice([]string{"SentTimestamp", "MessageGroupId"}),
+			AttributeNames:					aws.StringSlice([]string{"SentTimestamp"}),
       QueueUrl:            		queue,
       MaxNumberOfMessages: 		aws.Int64(sqsMaxMessages),
 			WaitTimeSeconds:     		aws.Int64(sqsPollWaitSeconds),
-			MessageAttributeNames:	aws.StringSlice([]string{"User", "Command"}),
+			MessageAttributeNames:	aws.StringSlice([]string{"User", "Command", "Session"}),
     })
     if err != nil {
       log.Errorf("Failed to fetch sqs message %v", err)
@@ -150,13 +154,15 @@ func pollQueue(chn chan<- *sqs.Message, user *string, queue *string) {
 				*message.MessageAttributes["User"].StringValue == *user &&
 				(*message.MessageAttributes["Command"].StringValue == "echo" ||
 				*message.MessageAttributes["Command"].StringValue == "search") &&
-				*message.Attributes["MessageGroupId"] == token ){
+				*message.MessageAttributes["Session"].StringValue == token ){
 				chn <- message
 			} else {
-				fmt.Println(*message.MessageAttributes["User"].StringValue)
-				fmt.Println(*message.MessageAttributes["User"].StringValue)
-				fmt.Println(*message.MessageAttributes["User"].StringValue)
-				log.Warnf("Echo system cant handle this request, waiting until timeout\n")
+				sqsService.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
+					QueueUrl:	queue,
+					ReceiptHandle: message.ReceiptHandle,
+					VisibilityTimeout: aws.Int64(0),
+				})
+				log.Warnf("Client App cant handle this request")
 			}
     }
   }
